@@ -2,7 +2,7 @@
 
 package forbyfour
 
-func ForceSelect(s int8) {
+func ForceSelect(s sel) {
 	switch {
 	case s == AVX1 && avxSupt:
 		MatMul = innrPrd_avx

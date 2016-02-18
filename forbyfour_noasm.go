@@ -4,6 +4,6 @@ func init() {
 	MatMul = innrPrd_default
 }
 
-func ForceSelect(s int8) {
+func ForceSelect(s sel) {
 	MatMul = innrPrd_default
 }

@@ -8,8 +8,10 @@ var (
 	MatMul func(a, b, c []float64)
 )
 
+type sel int8
+
 const (
-	AVX1 int8 = iota
+	AVX1 sel = iota
 	AVX2
 	SSE3_FMA
 	SSE2_FMA
