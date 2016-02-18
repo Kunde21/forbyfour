@@ -1,4 +1,4 @@
-# forbyfour
+# forbyfour  [![GitHub license](https://img.shields.io/github/license/mashape/apistatus.svg)]()
 Simple go library implementing matrix multiplication on 4x4 matrices using vectorized assembly
 
 # Use
