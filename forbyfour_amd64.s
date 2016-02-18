@@ -1,0 +1,623 @@
+// +build !noasm !appengine
+
+#define NOSPLIT 7
+
+// func initasm()(a,a2 bool)
+// pulled from runtime/asm_amd64.s
+TEXT ·initasm(SB), NOSPLIT, $0
+	MOVQ $1, AX
+	CPUID
+	ANDL $0x1000, CX
+	CMPL CX, $0x1000
+	JNE  nofma
+	MOVB $1, ·fmaSupt(SB) // set numgo·fmaSupt
+	JMP  fma
+nofma:
+	MOVB $0, ·fmaSupt(SB)
+fma:
+	MOVQ $1, AX
+	CPUID
+
+	ANDL $0x1, CX
+	CMPL CX, $0x1
+	JNE nosse3
+	MOVB $1, ·sse3Supt(SB)
+	JMP sse3
+nosse3:	
+	MOVB $0, ·sse3Supt(SB)
+sse3:	
+	MOVQ $1, AX
+	CPUID
+
+	// Detect AVX and AVX2 as per 14.7.1  Detection of AVX2 chapter of [1]
+	// [1] 64-ia-32-architectures-software-developer-manual-325462.pdf
+	// http://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-manual-325462.pdf
+	ANDL $0x18000000, CX // check for OSXSAVE and AVX bits
+	CMPL CX, $0x18000000
+	JNE  sse3
+
+	// For XGETBV, OSXSAVE bit is required and sufficient
+	MOVL $0, CX
+	XGETBV
+	ANDL $6, AX
+	CMPL AX, $6                        // Check for OS support of YMM registers
+	JNE  sse3
+	MOVB $1, ·avxSupt(SB)              // set numgo·avxSupt
+
+	// Check for AVX2 capability
+	MOVL $7, AX
+	MOVL $0, CX
+	CPUID
+	ANDL $0x20, BX         // check for AVX2 bit
+	CMPL BX, $0x20
+	JNE  noavx2
+	MOVB $1, ·avx2Supt(SB) // set numgo·avx2Supt
+	RET
+noavx:
+	MOVB $0, ·avxSupt(SB) // set numgo·avxSupt
+noavx2:
+	MOVB $0, ·avx2Supt(SB) // set numgo·avx2Supt
+	RET
+
+
+// func innrPrd_avx(a,b,c []float64)
+TEXT ·innrPrd_avx(SB), NOSPLIT, $0
+	MOVQ a_base+0(FP), R8
+	MOVQ b_base+24(FP), R9
+	MOVQ c_base+48(FP), R10
+
+	// Load Column data
+	VMOVDQA (R9), Y0
+	VMOVDQA 32(R9), Y1
+	VMOVDQA 64(R9), Y2
+	VMOVDQA 96(R9), Y3
+
+	// Unpack columns, matching high and low 128-bit pairs
+	BYTE $0xC5 ; BYTE $0xFD ; BYTE $0x14 ; BYTE $0xE1
+	//VUNPCKLPD Y0, Y1, Y4
+	BYTE $0xC5 ; BYTE $0xED ; BYTE $0x14 ; BYTE $0xEB
+	//VUNPCKLPD Y2, Y3, Y5
+	BYTE $0xC5 ; BYTE $0xFD ; BYTE $0x15 ; BYTE $0xF1
+	//VUNPCKHPD Y0, Y1, Y6
+	BYTE $0xC5 ; BYTE $0xED ; BYTE $0x15 ; BYTE $0xFB
+	//VUNPCKHPD Y2, Y3, Y7
+
+	// Match the pairs created in unpacking
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x5D ; BYTE $0x06 ; BYTE $0xC5 ; BYTE $0x20
+	//VPERM2F128 Y4, Y5, Y0 $0x20
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x4D ; BYTE $0x06 ; BYTE $0xCF ; BYTE $0x20
+	//VPERM2F128 Y6, Y7, Y1 $0x20
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x5D ; BYTE $0x06 ; BYTE $0xD5 ; BYTE $0x31
+	//VPERM2F128 Y4, Y5, Y2 $0x31
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x4D ; BYTE $0x06 ; BYTE $0xDF ; BYTE $0x31
+	//VPERM2F2128 Y6, Y7, Y3, $0x31
+
+	// Column data is now organized in ymm0-3
+	// Load single4 Row data
+	VMOVDQA (R8), Y4
+
+	BYTE $0xC5 ; BYTE $0xDD ; BYTE $0x59 ; BYTE $0xE8
+	//VMULPD Y4, Y0, Y5
+	BYTE $0xC5 ; BYTE $0xDD ; BYTE $0x59 ; BYTE $0xF1
+	//VMULPD Y4, Y1, Y6
+
+	PREFETCHT0 (R10)
+	
+	BYTE $0xC5 ; BYTE $0xDD ; BYTE $0x59 ; BYTE $0xFA
+	//VMULPD Y4, Y2, Y7
+	BYTE $0xC5 ; BYTE $0x5D ; BYTE $0x59 ; BYTE $0xC3
+	//VMULPD Y4, Y3, Y8
+
+	VMOVDQA 32(R8), Y9
+	
+	BYTE $0xC5 ; BYTE $0x35 ; BYTE $0x59 ; BYTE $0xD0
+	//VMULPD Y9, Y0, Y10
+	BYTE $0xC5 ; BYTE $0x35 ; BYTE $0x59 ; BYTE $0xD9
+	//VMULPD Y9, Y1, Y11
+
+	PREFETCHT0 32(R10)
+	
+	BYTE $0xC5 ; BYTE $0x35 ; BYTE $0x59 ; BYTE $0xE2
+	//VMULPD Y9, Y2, Y12
+	BYTE $0xC5 ; BYTE $0x35 ; BYTE $0x59 ; BYTE $0xEB
+	//VMULPD Y9, Y3, Y13
+
+	VMOVDQA 64(R8), Y14
+
+	BYTE $0xC5; BYTE $0xD5; BYTE $0x7C; BYTE $0xEE	
+	//VHADDPD Y5, Y6, Y5
+	BYTE $0xC4; BYTE $0xC1; BYTE $0x45; BYTE $0x7C; BYTE $0xF0
+	//VHADDPD Y7, Y8, Y6
+
+	BYTE $0xC4; BYTE $0x41; BYTE $0x2D; BYTE $0x7C; BYTE $0xD3
+	//VHADDPD Y10, Y11, Y10
+
+	BYTE $0xC4; BYTE $0x41; BYTE $0x1D; BYTE $0x7C; BYTE $0xDD
+	//VHADDPD Y12, Y13, Y11
+
+	VMOVDQA 96(R8), Y15
+	
+	BYTE $0xC4; BYTE $0xE3; BYTE $0x55; BYTE $0x06; BYTE $0xFE; BYTE $0x31
+	//VPERM2F128 Y5, Y6, Y7, $0x31	
+	BYTE $0xC4; BYTE $0xE3; BYTE $0x55; BYTE $0x06; BYTE $0xF6; BYTE $0x20
+	//VPERM2F128 Y5, Y6, Y6, $0x20
+
+	BYTE $0xC5; BYTE $0xCD; BYTE $0x58; BYTE $0xE7
+	//VADDPD Y6, Y7, Y4
+	VMOVDQA Y4, (R10)
+
+	BYTE $0xC4; BYTE $0x43; BYTE $0x2D; BYTE $0x06; BYTE $0xE3; BYTE $0x20
+	//VPERM2F128 Y10, Y11, Y12, $0x20
+	BYTE $0xC4; BYTE $0x43; BYTE $0x2D; BYTE $0x06; BYTE $0xEB; BYTE $0x31
+	//VERPM2F128 Y10, Y11, Y13, $0X31
+	
+	BYTE $0xC4; BYTE $0x41; BYTE $0x1D; BYTE $0x58; BYTE $0xCD
+	//VADDPD Y12, Y13, Y9
+	VMOVDQA Y9, 32(R10)
+	
+	BYTE $0xC5 ; BYTE $0x0D ; BYTE $0x59 ; BYTE $0xD0
+	//VMULPD Y14, Y0, Y10 vmulpd ymm10,ymm14,ymm0
+	BYTE $0xC5 ; BYTE $0x0D ; BYTE $0x59 ; BYTE $0xD9
+	//VMULPD Y14, Y1, Y11
+	BYTE $0xC5 ; BYTE $0x0D ; BYTE $0x59 ; BYTE $0xE2
+	//VMULPD Y14, Y2, Y12
+	BYTE $0xC5 ; BYTE $0x0D ; BYTE $0x59 ; BYTE $0xEB
+	//VMULPD Y14, Y3, Y13
+
+	PREFETCHT0 64(R10)
+
+	BYTE $0xC5 ; BYTE $0x85 ; BYTE $0x59 ; BYTE $0xE8
+	//VMULPD Y15, Y0, Y5
+	BYTE $0xC5 ; BYTE $0x85 ; BYTE $0x59 ; BYTE $0xF1
+	//VMULPD Y15, Y1, Y6
+
+	PREFETCHT0 96(R10)
+	
+	BYTE $0xC5 ; BYTE $0x85 ; BYTE $0x59 ; BYTE $0xFA
+	//VMULPD Y15, Y2, Y7
+	BYTE $0xC5 ; BYTE $0x05 ; BYTE $0x59 ; BYTE $0xC3
+	//VMULPD Y15, Y3, Y8
+
+	
+	BYTE $0xC5; BYTE $0xD5; BYTE $0x7C; BYTE $0xEE	
+	//VHADDPD Y5, Y6, Y5
+	BYTE $0xC4; BYTE $0xC1; BYTE $0x45; BYTE $0x7C; BYTE $0xF0
+	//VHADDPD Y7, Y8, Y6
+
+	BYTE $0xC4; BYTE $0x41; BYTE $0x2D; BYTE $0x7C; BYTE $0xD3
+	//VHADDPD Y10, Y11, Y10
+	BYTE $0xC4; BYTE $0x41; BYTE $0x1D; BYTE $0x7C; BYTE $0xDD
+	//VHADDPD Y12, Y13, Y11
+
+	BYTE $0xC4; BYTE $0xE3; BYTE $0x55; BYTE $0x06; BYTE $0xFE; BYTE $0x31
+	//VPERM2F128 Y5, Y6, Y7, $0x31	
+	BYTE $0xC4; BYTE $0xE3; BYTE $0x55; BYTE $0x06; BYTE $0xF6; BYTE $0x20
+	//VPERM2F128 Y5, Y6, Y6, $0x20
+
+	BYTE $0xC5; BYTE $0xCD; BYTE $0x58; BYTE $0xE7
+	//VADDPD Y6, Y7, Y4
+	VMOVDQA Y4, 96(R10)
+
+	BYTE $0xC4; BYTE $0x43; BYTE $0x2D; BYTE $0x06; BYTE $0xE3; BYTE $0x20
+	//VPERM2F128 Y10, Y11, Y12, $0x20
+	BYTE $0xC4; BYTE $0x43; BYTE $0x2D; BYTE $0x06; BYTE $0xEB; BYTE $0x31
+	//VERPM2F128 Y10, Y11, Y13, $0X31
+	
+	BYTE $0xC4; BYTE $0x41; BYTE $0x1D; BYTE $0x58; BYTE $0xCD
+	//VADDPD Y12, Y13, Y9
+	VMOVDQA Y9, 64(R10)
+	
+	//Cleanup
+	VZEROUPPER
+	
+	RET
+
+// func innrPrd_avx2(a,b,c []float64)
+TEXT ·innrPrd_avx2(SB), NOSPLIT, $0
+	MOVQ a_base+0(FP), R8
+	MOVQ b_base+24(FP), R9
+	MOVQ c_base+48(FP), R10
+	MOVQ $16, SI  // Hard-coded for 4x4 matrix
+
+	// Load Column data
+	VMOVDQA (R9), Y0
+	VMOVDQA 32(R9), Y1
+
+	// Unpack columns, matching high and low 128-bit pairs
+	BYTE $0xC5 ; BYTE $0xFD ; BYTE $0x14 ; BYTE $0xE1
+	//VUNPCKLPD Y0, Y1, Y4
+	BYTE $0xC5 ; BYTE $0xFD ; BYTE $0x15 ; BYTE $0xF1
+	//VUNPCKHPD Y0, Y1, Y6
+
+	VMOVDQA 64(R9), Y2
+	VMOVDQA 96(R9), Y3
+	
+	BYTE $0xC5 ; BYTE $0xED ; BYTE $0x14 ; BYTE $0xEB
+	//VUNPCKLPD Y2, Y3, Y5
+	BYTE $0xC5 ; BYTE $0xED ; BYTE $0x15 ; BYTE $0xFB
+	//VUNPCKHPD Y2, Y3, Y7
+
+	// Match the pairs created in unpacking
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x5D ; BYTE $0x06 ; BYTE $0xC5 ; BYTE $0x20
+	//VPERM2F128 Y4, Y5, Y0, $0x20
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x4D ; BYTE $0x06 ; BYTE $0xCF ; BYTE $0x20
+	//VPERM2F128 Y6, Y7, Y1, $0x20
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x5D ; BYTE $0x06 ; BYTE $0xD5 ; BYTE $0x31
+	//VPERM2F128 Y4, Y5, Y2, $0x31
+	BYTE $0xC4 ; BYTE $0xE3 ; BYTE $0x4D ; BYTE $0x06 ; BYTE $0xDF ; BYTE $0x31
+	//VPERM2F128 Y6, Y7, Y3, $0x31
+
+	// Column data is now organized in ymm0-3
+loop:	// Load single4 Row data
+	VMOVDQA (R8), Y4
+
+	BYTE $0xC5 ; BYTE $0xDD ; BYTE $0x59 ; BYTE $0xE8
+	//VMULPD Y4, Y0, Y5
+	BYTE $0xC5 ; BYTE $0xDD ; BYTE $0x59 ; BYTE $0xF1
+	//VMULPD Y4, Y1, Y6
+	BYTE $0xC5 ; BYTE $0xDD ; BYTE $0x59 ; BYTE $0xFA
+	//VMULPD Y4, Y2, Y7
+	BYTE $0xC5 ; BYTE $0x5D ; BYTE $0x59 ; BYTE $0xC3
+	//VMULPD Y4, Y3, Y8
+	
+	BYTE $0xC5; BYTE $0xD5; BYTE $0x7C; BYTE $0xEE	
+	//vhaddpd ymm5,ymm6,ymm5
+	BYTE $0xC4; BYTE $0xC1; BYTE $0x45; BYTE $0x7C; BYTE $0xF0
+	//vhaddpd ymm6,ymm8,ymm7
+	
+	BYTE $0xC4; BYTE $0xE3; BYTE $0x55; BYTE $0x06; BYTE $0xFE; BYTE $0x31
+	//vperm2f128 ymm7,ymm5,ymm6,0x31
+	BYTE $0xC4; BYTE $0xE3; BYTE $0x55; BYTE $0x06; BYTE $0xF6; BYTE $0x20
+	//vperm2f128 ymm6,ymm5,ymm6,0x20
+
+	
+	BYTE $0xC5; BYTE $0xCD; BYTE $0x58; BYTE $0xE7
+	//vaddpd ymm4,ymm6,ymm7
+	
+	VMOVDQA Y4, (R10)
+	
+	ADDQ $32, R8
+	ADDQ $32, R10
+	SUBQ $4, SI
+	JG loop
+
+	//Cleanup
+	VZEROUPPER
+	
+	RET
+
+// func innrPrd_fma(a,b,c []float64)
+// Requires FMA, uses VFMADD213PD instruction
+// Requires SSE3, uses HADDPD instruction
+TEXT ·innrPrd_sse3_fma(SB), NOSPLIT, $0
+	MOVQ a_base+0(FP), R8
+	MOVQ b_base+24(FP), R9
+	MOVQ c_base+48(FP), R10
+	MOVQ $16, SI  // Hard-coded for 4x4 matrix
+
+	MOVAPD (R9), X0
+	MOVAPD 16(R9), X4
+	MOVAPD 32(R9), X8
+	MOVAPD 48(R9), X9
+
+	MOVAPD X0, X2
+	UNPCKLPD X8, X0
+	UNPCKHPD X8, X2
+	
+	MOVAPD X4, X6
+	UNPCKLPD X9, X4
+	UNPCKHPD X9, X6
+
+	MOVAPD 64(R9), X1
+	MOVAPD 80(R9), X5
+	MOVAPD 96(R9), X8
+	MOVAPD 112(R9), X9
+	
+	MOVAPD X1, X3
+	UNPCKLPD X8, X1
+	UNPCKHPD X8, X3
+
+	MOVAPD X5, X7
+	UNPCKLPD X9, X5
+	UNPCKHPD X9, X7
+	// Column data is now organized in xmm0-7
+	
+loop:	// Load single Row data
+	MOVAPD (R8), X8
+	MOVAPD X8, X10
+	MOVAPD 16(R8), X9
+	MOVAPD X9, X11
+
+	MULPD X0, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xF1; BYTE $0xA8; BYTE $0xDA
+	//VFMADD213PD X1, X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X2, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xE1; BYTE $0xA8; BYTE $0xE2
+	//VFMADD213PD X3, X10, X12
+
+	HADDPD X12, X11
+	MOVAPD X11, (R10)
+
+	MOVAPD X8, X10
+	MOVAPD X9, X11
+
+	MULPD X4, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xD1; BYTE $0xA8; BYTE $0xDA
+	//VFMADD213PD X1, X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X6, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xC1; BYTE $0xA8; BYTE $0xE2
+	//VFMADD213PD X3, X10, X12
+
+	HADDPD X12, X11
+	MOVAPD X11, 16(R10)
+
+	ADDQ $32, R8
+	ADDQ $32, R10
+	SUBQ $4, SI
+	JG loop
+
+end:	
+	RET
+
+// func innrPrd_fma(a,b,c []float64)
+// Requires FMA, uses VFMADD213PD instruction
+TEXT ·innrPrd_sse2_fma(SB), NOSPLIT, $0
+	MOVQ a_base+0(FP), R8
+	MOVQ b_base+24(FP), R9
+	MOVQ c_base+48(FP), R10
+	MOVQ $16, SI  // Hard-coded for 4x4 matrix
+
+	MOVAPD (R9), X0
+	MOVAPD 16(R9), X4
+	MOVAPD 32(R9), X8
+	MOVAPD 48(R9), X9
+
+	MOVAPD X0, X2
+	UNPCKLPD X8, X0
+	UNPCKHPD X8, X2
+	
+	MOVAPD X4, X6
+	UNPCKLPD X9, X4
+	UNPCKHPD X9, X6
+
+	MOVAPD 64(R9), X1
+	MOVAPD 80(R9), X5
+	MOVAPD 96(R9), X8
+	MOVAPD 112(R9), X9
+	
+	MOVAPD X1, X3
+	UNPCKLPD X8, X1
+	UNPCKHPD X8, X3
+
+	MOVAPD X5, X7
+	UNPCKLPD X9, X5
+	UNPCKHPD X9, X7
+	// Column data is now organized in xmm0-7
+	
+loop:	// Load single Row data
+	MOVAPD (R8), X8
+	MOVAPD X8, X10
+	MOVAPD 16(R8), X9
+	MOVAPD X9, X11
+
+	MULPD X0, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xF1; BYTE $0xA8; BYTE $0xDA
+	//VFMADD213PD X1, X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X2, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xE1; BYTE $0xA8; BYTE $0xE2
+	//VFMADD213PD X3, X10, X12
+
+	MOVAPD X11, X10
+	UNPCKLPD X12, X11
+	UNPCKHPD X12, X10
+	ADDPD X10, X11 
+
+	MOVAPD X11, (R10)
+
+	MOVAPD X8, X10
+	MOVAPD X9, X11
+
+	MULPD X4, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xD1; BYTE $0xA8; BYTE $0xDA
+	//VFMADD213PD X1, X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X6, X10
+	BYTE $0xC4; BYTE $0x42; BYTE $0xC1; BYTE $0xA8; BYTE $0xE2
+	//VFMADD213PD X3, X10, X12
+
+	MOVAPD X11, X10
+	UNPCKLPD X12, X11
+	UNPCKHPD X12, X10
+	ADDPD X10, X11 
+
+	MOVAPD X11, 16(R10)
+
+	ADDQ $32, R8
+	ADDQ $32, R10
+	SUBQ $4, SI
+	JG loop
+
+end:	
+	RET
+	
+// func innrPrd_sse3(a,b,c []float64)
+// Requres SSE3 for HADDPD instruction
+TEXT ·innrPrd_sse3(SB), NOSPLIT, $0
+	MOVQ a_base+0(FP), R8
+	MOVQ b_base+24(FP), R9
+	MOVQ c_base+48(FP), R10
+	MOVQ $16, SI  // Hard-coded for 4x4 matrix
+
+	MOVAPD (R9), X0
+	MOVAPD 16(R9), X4
+	MOVAPD 32(R9), X8
+	MOVAPD 48(R9), X9
+
+	MOVAPD X0, X2
+	UNPCKLPD X8, X0
+	UNPCKHPD X8, X2
+	
+	MOVAPD X4, X6
+	UNPCKLPD X9, X4
+	UNPCKHPD X9, X6
+
+	MOVAPD 64(R9), X1
+	MOVAPD 80(R9), X5
+	MOVAPD 96(R9), X8
+	MOVAPD 112(R9), X9
+	
+	MOVAPD X1, X3
+	UNPCKLPD X8, X1
+	UNPCKHPD X8, X3
+
+	MOVAPD X5, X7
+	UNPCKLPD X9, X5
+	UNPCKHPD X9, X7
+	// Column data is now organized in xmm0-7
+	
+loop:	// Load single Row data
+	MOVAPD (R8), X8
+	MOVAPD X8, X10
+	MOVAPD 16(R8), X9
+	MOVAPD X9, X11
+
+	MULPD X0, X10
+	MULPD X1, X11
+	ADDPD X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X2, X10
+	MULPD X3, X12
+	ADDPD X10, X12
+
+	HADDPD X12, X11
+	MOVAPD X11, (R10)
+
+	MOVAPD X8, X10
+	MOVAPD X9, X11
+
+	MULPD X4, X10
+	MULPD X5, X11
+	ADDPD X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X6, X10
+	MULPD X7, X12
+	ADDPD X10, X12
+
+	HADDPD X12, X11
+	MOVAPD X11, 16(R10)
+
+	ADDQ $32, R8
+	ADDQ $32, R10
+	SUBQ $4, SI
+	JG loop
+
+end:	
+	RET
+
+// func innrPrd_sse3(a,b,c []float64)
+TEXT ·innrPrd_sse2(SB), NOSPLIT, $0
+	MOVQ a_base+0(FP), R8
+	MOVQ b_base+24(FP), R9
+	MOVQ c_base+48(FP), R10
+	MOVQ $16, SI  // Hard-coded for 4x4 matrix
+
+	MOVAPD (R9), X0
+	MOVAPD 16(R9), X4
+	MOVAPD 32(R9), X8
+	MOVAPD 48(R9), X9
+
+	MOVAPD X0, X2
+	UNPCKLPD X8, X0
+	UNPCKHPD X8, X2
+	
+	MOVAPD X4, X6
+	UNPCKLPD X9, X4
+	UNPCKHPD X9, X6
+
+	MOVAPD 64(R9), X1
+	MOVAPD 80(R9), X5
+	MOVAPD 96(R9), X8
+	MOVAPD 112(R9), X9
+	
+	MOVAPD X1, X3
+	UNPCKLPD X8, X1
+	UNPCKHPD X8, X3
+
+	MOVAPD X5, X7
+	UNPCKLPD X9, X5
+	UNPCKHPD X9, X7
+	// Column data is now organized in xmm0-7
+	
+loop:	// Load single Row data
+	MOVAPD (R8), X8
+	MOVAPD X8, X10
+	MOVAPD 16(R8), X9
+	MOVAPD X9, X11
+
+	MULPD X0, X10
+	MULPD X1, X11
+	ADDPD X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X2, X10
+	MULPD X3, X12
+	ADDPD X10, X12
+
+	MOVAPD X11, X10
+	UNPCKLPD X12, X11
+	UNPCKHPD X12, X10
+	ADDPD X10, X11 
+	
+	MOVAPD X11, (R10)
+
+	MOVAPD X8, X10
+	MOVAPD X9, X11
+
+	MULPD X4, X10
+	MULPD X5, X11
+	ADDPD X10, X11
+
+	MOVAPD X8, X10
+	MOVAPD X9, X12
+
+	MULPD X6, X10
+	MULPD X7, X12
+	ADDPD X10, X12
+
+	MOVAPD X11, X10
+	UNPCKLPD X12, X11
+	UNPCKHPD X12, X10
+	ADDPD X10, X11 
+	
+	MOVAPD X11, 16(R10)
+
+	ADDQ $32, R8
+	ADDQ $32, R10
+	SUBQ $4, SI
+	JG loop
+
+end:	
+	RET
