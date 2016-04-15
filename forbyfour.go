@@ -21,13 +21,10 @@ const (
 )
 
 func innrPrd_default(a, b, c []float64) {
-	var x, y, z int
+	var x, y int
 	for x = 0; x < 4; x++ { //rows
 		for y = 0; y < 4; y++ { //cols
-			for z = 0; z < 4; z++ { //iterator
-				c[x*4+y] += a[x*4+z] * b[z*4+y]
-			}
+			c[x*4+y] = a[x*4] * b[y]+ a[x*4+1] * b[4+y]+a[x*4+2] * b[8+y]+a[x*4+3] * b[12+y]
 		}
 	}
-
 }
