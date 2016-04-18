@@ -31,3 +31,7 @@ func innrPrd_sse2_fma(a, b, c []float64)
 func innrPrd_sse3(a, b, c []float64)
 
 func innrPrd_sse2(a, b, c []float64)
+
+func testBroadcast(a, b, c []float64)
+
+func testBroadcast2(a, b, c []float64)

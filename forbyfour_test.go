@@ -13,6 +13,17 @@ func init() {
 	res = []float64{56, 62, 68, 74, 152, 174, 196, 218, 248, 286, 324, 362, 344, 398, 452, 506}
 }
 
+func TestBroadcast(t *testing.T) {
+	c := make([]float64, 16)
+	testBroadcast(a, b, c)
+	for i, v := range res {
+		if c[i] != v {
+			t.Logf("Value fault at %v.  Expected %v got %v", i, v, c[i])
+			t.Fail()
+		}
+	}
+}
+
 func TestInnrPrd_avx1(t *testing.T) {
 	c := make([]float64, 16)
 	innrPrd_avx(a, b, c)
@@ -83,13 +94,7 @@ func TestInnrPrd_sse2(t *testing.T) {
 func TestNaive(t *testing.T) {
 	c := make([]float64, 16)
 
-	for x := 0; x < 4; x++ { //rows
-		for y := 0; y < 4; y++ { //cols
-			for z := 0; z < 4; z++ { //iterator
-				c[x*4+y] += a[x*4+z] * b[z*4+y]
-			}
-		}
-	}
+	innrPrd_default(a, b, c)
 	for i, v := range res {
 		if c[i] != v {
 			t.Logf("Value fault at %v.  Expected %v got %v", i, v, c[i])
@@ -150,19 +155,39 @@ func BenchmarkInnrPrd_avx2(t *testing.B) {
 	}
 }
 
+func BenchmarkInnrPrd_broadcast(t *testing.B) {
+	if !avx2Supt {
+		t.Skip()
+	}
+	c := make([]float64, 16)
+
+	t.ResetTimer()
+	t.ReportAllocs()
+	for i := 0; i < t.N; i++ {
+		testBroadcast(a, b, c)
+	}
+}
+
+func BenchmarkInnrPrd_broadcast2(t *testing.B) {
+	if !avx2Supt {
+		t.Skip()
+	}
+	c := make([]float64, 16)
+
+	t.ResetTimer()
+	t.ReportAllocs()
+	for i := 0; i < t.N; i++ {
+		testBroadcast2(a, b, c)
+	}
+}
+
 func BenchmarkNaive(t *testing.B) {
 	c := make([]float64, 16)
 
 	t.ResetTimer()
 	t.ReportAllocs()
 	for i := 0; i < t.N; i++ {
-		for x := 0; x < 4; x++ { //rows
-			for y := 0; y < 4; y++ { //cols
-				for z := 0; z < 4; z++ { //iterator
-					c[x*4+y] += a[x*4+z] * b[z*4+y]
-				}
-			}
-		}
+		innrPrd_default(a, b, c)
 	}
 }
 
